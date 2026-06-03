@@ -1,0 +1,17 @@
+# Python deps for the AI Pentesting / Recon Assistant.
+# The recon TOOLS themselves (nmap, subfinder, httpx, whatweb, nuclei, gobuster)
+# are external binaries — install those via your OS package manager / Go.
+
+# LLM client (pick the one you use)
+anthropic>=0.39.0
+# openai>=1.0.0
+
+# Backend API (Month 3)
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Reports (Month 3)
+jinja2>=3.1.0
+
+# Dashboard (Month 4) — optional, pick one
+streamlit>=1.33.0
