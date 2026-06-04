@@ -92,6 +92,12 @@ SCAN_PROFILES: dict[str, list[str]] = {
     # Is the host even up? (host discovery only, no port scan)
     "ping":        ["-sn"],
 
+    # ARP/quick liveness sweep of a range without port scanning.
+    "discovery":   ["-sn", "-PR", "-PE", "-PP", "-PS21,22,80,443", "-T4"],
+
+    # Fast scan of the most common 100 ports — very fast triage.
+    "fast":        ["-T4", "-F"],
+
     # Fast scan of the most common 1000 ports.
     "quick":       ["-T4", "--top-ports", "1000"],
 
@@ -107,8 +113,24 @@ SCAN_PROFILES: dict[str, list[str]] = {
     # Aggressive: OS detect + version + default scripts + traceroute.
     "aggressive":  ["-A", "-T4"],
 
+    # OS fingerprinting + version detection.
+    "os":          ["-O", "-sV", "-T4"],
+
     # UDP scan (slow — keep the port set small).
     "udp":         ["-sU", "-T4", "--top-ports", "50"],
+
+    # Combined TCP+UDP top ports.
+    "udp_tcp":     ["-sS", "-sU", "-T4", "--top-ports", "50"],
+
+    # Vulnerability sweep: version detection + the NSE 'vuln' scripts.
+    "vuln":        ["-sV", "-T4", "--script=vuln"],
+
+    # Common web ports + http NSE enumeration scripts.
+    "web":         ["-sV", "-T4", "-p", "80,443,8080,8443,8000,8888",
+                    "--script=http-enum,http-title,http-headers,http-methods"],
+
+    # Stealthy slow SYN scan to stay under simple rate alarms.
+    "stealth":     ["-sS", "-T2", "-f", "--top-ports", "1000"],
 }
 
 # Allow-listed NSE script categories the agent may request.
@@ -120,6 +142,10 @@ ALLOWED_SCRIPT_CATEGORIES = {
 
 # Validates an nmap port spec like "80", "1-1000", "22,80,443", "U:53,T:80".
 _PORT_RE = re.compile(r"^[UT]?:?[0-9,\-]+(,[UT]?:?[0-9,\-]+)*$")
+
+# Validates --script-args: letters, digits, and . _ , = : / - + @ space only.
+# Blocks shell metacharacters; nmap args are passed as one argv token anyway.
+_SCRIPT_ARGS_RE = re.compile(r"^[A-Za-z0-9._,=:/ @+\-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -145,16 +171,25 @@ class NmapResult:
             return f"Scan of {self.target} failed: {self.error}"
         lines = [f"Scan of {self.target}:"]
         for host in self.hosts:
-            lines.append(f"  Host {host['address']} ({host['state']}):")
+            hn = host.get("hostnames") or []
+            hn_str = f" [{', '.join(hn)}]" if hn else ""
+            lines.append(f"  Host {host['address']}{hn_str} ({host['state']}):")
+            os_g = host.get("os") or {}
+            if os_g.get("name"):
+                lines.append(f"    OS: {os_g['name']} ({os_g.get('accuracy', 0)}%)")
             for p in host.get("ports", []):
                 svc = p.get("service", "")
+                prod = p.get("product", "")
                 ver = p.get("version", "")
                 lines.append(
                     f"    {p['port']}/{p['protocol']} {p['state']} "
-                    f"{svc} {ver}".rstrip()
+                    f"{svc} {prod} {ver}".rstrip()
                 )
             if not host.get("ports"):
                 lines.append("    (no open ports found)")
+            for sid, out in (host.get("hostscripts") or {}).items():
+                first_line = (out or "").strip().splitlines()[:1]
+                lines.append(f"    [host] {sid}: {first_line[0] if first_line else ''}")
         return "\n".join(lines)
 
 
@@ -168,6 +203,11 @@ def run_nmap(
     ports: Optional[str] = None,
     scripts: Optional[str] = None,
     *,
+    skip_ping: bool = False,
+    os_detect: bool = False,
+    timing: Optional[int] = None,
+    script_args: Optional[str] = None,
+    top_ports: Optional[int] = None,
     allowed_scope: Optional[list[str]] = None,
     timeout: int = 600,
     extra_args: Optional[list[str]] = None,
@@ -179,14 +219,27 @@ def run_nmap(
     target : str
         Host or IP to scan. MUST be inside `allowed_scope`.
     scan_type : str
-        One of SCAN_PROFILES keys ("ping", "quick", "version", "full",
-        "default", "aggressive", "udp"). This is the LLM's main lever.
+        One of SCAN_PROFILES keys (ping, discovery, fast, quick, version, full,
+        default, aggressive, os, udp, udp_tcp, vuln, web, stealth). This is the
+        LLM's main lever.
     ports : str, optional
         Explicit port spec, e.g. "80,443" or "1-1000". Overrides the
         profile's port selection when given.
     scripts : str, optional
         Comma-separated NSE script *categories* (e.g. "vuln,auth"). Each must
         be in ALLOWED_SCRIPT_CATEGORIES. Translated to --script=...
+    skip_ping : bool
+        Add -Pn (treat host as online, skip host discovery). Useful when a host
+        blocks pings but is known to be up.
+    os_detect : bool
+        Add -O (OS fingerprinting) on top of the chosen profile.
+    timing : int, optional
+        Override timing template 0-5 (-T0..-T5). Higher = faster/noisier.
+    script_args : str, optional
+        Value for nmap --script-args (e.g. "http.useragent=recon"). Validated
+        to a safe character set.
+    top_ports : int, optional
+        Scan the N most common ports (--top-ports N), 1..65535.
     allowed_scope : list[str], optional
         Override the default scope allow-list.
     timeout : int
@@ -200,21 +253,15 @@ def run_nmap(
     """
     allowed_scope = allowed_scope or DEFAULT_ALLOWED_SCOPE
 
-    # 1) nmap must be installed.
-    if shutil.which("nmap") is None:
-        return NmapResult(
-            target=target, command=[], success=False,
-            error="nmap is not installed or not on PATH.",
-        )
-
-    # 2) Scope guard — refuse out-of-scope targets.
+    # 1) Scope guard FIRST — an out-of-scope target must always be refused,
+    #    regardless of whether the binary happens to be installed.
     if not is_in_scope(target, allowed_scope):
         raise ScopeError(
             f"Target {target!r} is not in the authorized scope. "
             f"Allowed: {allowed_scope}"
         )
 
-    # 3) Validate scan_type.
+    # 2) Validate scan_type.
     if scan_type not in SCAN_PROFILES:
         return NmapResult(
             target=target, command=[], success=False,
@@ -226,6 +273,19 @@ def run_nmap(
     cmd: list[str] = ["nmap"]
     cmd += SCAN_PROFILES[scan_type]
 
+    # Optional host-discovery / OS / timing modifiers layered on the profile.
+    if skip_ping:
+        cmd += ["-Pn"]
+    if os_detect and "-O" not in cmd and "-A" not in cmd:
+        cmd += ["-O"]
+    if timing is not None:
+        if timing not in range(0, 6):
+            return NmapResult(
+                target=target, command=[], success=False,
+                error=f"Invalid timing {timing!r}; use 0-5.",
+            )
+        cmd += [f"-T{timing}"]
+
     # Explicit ports override the profile.
     if ports:
         if not _PORT_RE.match(ports):
@@ -234,6 +294,15 @@ def run_nmap(
                 error=f"Invalid port spec {ports!r}.",
             )
         cmd += ["-p", ports]
+
+    # Top-N ports (mutually useful with no explicit ports).
+    if top_ports is not None:
+        if not 1 <= top_ports <= 65535:
+            return NmapResult(
+                target=target, command=[], success=False,
+                error=f"Invalid top_ports {top_ports!r}; use 1-65535.",
+            )
+        cmd += ["--top-ports", str(top_ports)]
 
     # NSE script categories (validated against the allow-list).
     if scripts:
@@ -247,11 +316,28 @@ def run_nmap(
             )
         cmd += [f"--script={','.join(cats)}"]
 
+    # NSE script arguments (validated to a safe charset — no shell metachars).
+    if script_args:
+        if not _SCRIPT_ARGS_RE.match(script_args):
+            return NmapResult(
+                target=target, command=[], success=False,
+                error=f"Invalid script_args {script_args!r}.",
+            )
+        cmd += ["--script-args", script_args]
+
     if extra_args:
         cmd += extra_args
 
     # Always emit XML to stdout so we can parse it reliably.
     cmd += ["-oX", "-", target]
+
+    # nmap must be installed (checked after validation so bad args are reported
+    # even on a machine without nmap; scope is already enforced above).
+    if shutil.which("nmap") is None:
+        return NmapResult(
+            target=target, command=cmd, success=False,
+            error="nmap is not installed or not on PATH.",
+        )
 
     # 5) Execute.
     try:
@@ -290,7 +376,11 @@ def run_nmap(
 # ---------------------------------------------------------------------------
 
 def _parse_nmap_xml(xml_text: str) -> list[dict]:
-    """Turn nmap's -oX output into a list of host dicts."""
+    """Turn nmap's -oX output into a list of host dicts.
+
+    Each host dict carries: address, state, hostnames, os (best guess + accuracy),
+    ports (with service/version/scripts), and hostscripts (host-level NSE output).
+    """
     if not xml_text.strip():
         return []
     try:
@@ -303,10 +393,35 @@ def _parse_nmap_xml(xml_text: str) -> list[dict]:
         status_el = host_el.find("status")
         state = status_el.get("state") if status_el is not None else "unknown"
 
+        # Prefer an IPv4/IPv6 address; fall back to the first address element.
         addr = ""
-        addr_el = host_el.find("address")
-        if addr_el is not None:
-            addr = addr_el.get("addr", "")
+        for addr_el in host_el.findall("address"):
+            if addr_el.get("addrtype") in ("ipv4", "ipv6"):
+                addr = addr_el.get("addr", "")
+                break
+        if not addr:
+            first = host_el.find("address")
+            addr = first.get("addr", "") if first is not None else ""
+
+        # Reverse-DNS / PTR hostnames.
+        hostnames: list[str] = []
+        hostnames_el = host_el.find("hostnames")
+        if hostnames_el is not None:
+            for hn in hostnames_el.findall("hostname"):
+                name = hn.get("name", "")
+                if name:
+                    hostnames.append(name)
+
+        # Best OS guess.
+        os_guess: dict = {}
+        os_el = host_el.find("os")
+        if os_el is not None:
+            match = os_el.find("osmatch")
+            if match is not None:
+                os_guess = {
+                    "name": match.get("name", ""),
+                    "accuracy": int(match.get("accuracy", 0) or 0),
+                }
 
         ports: list[dict] = []
         ports_el = host_el.find("ports")
@@ -326,13 +441,27 @@ def _parse_nmap_xml(xml_text: str) -> list[dict]:
                     "service": svc_el.get("name", "") if svc_el is not None else "",
                     "product": svc_el.get("product", "") if svc_el is not None else "",
                     "version": svc_el.get("version", "") if svc_el is not None else "",
+                    "extrainfo": svc_el.get("extrainfo", "") if svc_el is not None else "",
+                    "cpe": [c.text for c in (svc_el.findall("cpe") if svc_el is not None else []) if c.text],
                     "scripts": scripts_out,
                 })
+
+        # Host-level NSE scripts (e.g. smb-os-discovery) live under <hostscript>.
+        hostscripts: dict = {}
+        hostscript_el = host_el.find("hostscript")
+        if hostscript_el is not None:
+            hostscripts = {
+                s.get("id"): s.get("output", "")
+                for s in hostscript_el.findall("script")
+            }
 
         hosts.append({
             "address": addr,
             "state": state,
+            "hostnames": hostnames,
+            "os": os_guess,
             "ports": ports,
+            "hostscripts": hostscripts,
         })
     return hosts
 
@@ -345,11 +474,15 @@ def _parse_nmap_xml(xml_text: str) -> list[dict]:
 NMAP_TOOL_SCHEMA = {
     "name": "run_nmap",
     "description": (
-        "Scan an authorized host with nmap. Use scan_type to pick the intent: "
-        "'ping' (is host up), 'quick' (top 1000 ports), 'version' (service "
-        "versions), 'full' (all 65535 ports), 'default' (safe scripts + "
-        "versions), 'aggressive' (OS + scripts + traceroute), 'udp'. "
-        "Optionally pass NSE script categories via 'scripts' (e.g. 'vuln')."
+        "Scan an authorized host with nmap. Pick scan_type for the intent: "
+        "'ping' (is host up), 'discovery' (liveness sweep of a range), 'fast' "
+        "(top 100 ports), 'quick' (top 1000 ports), 'version' (service versions), "
+        "'full' (all 65535 ports), 'default' (safe scripts + versions), "
+        "'aggressive' (OS + scripts + traceroute), 'os' (OS fingerprint), 'udp', "
+        "'udp_tcp' (both), 'vuln' (NSE vuln scripts), 'web' (http enumeration on "
+        "web ports), 'stealth' (slow fragmented SYN). Add NSE categories via "
+        "'scripts'. Use skip_ping for hosts that block ping, os_detect to add OS "
+        "fingerprinting, and ports/top_ports to narrow the port set."
     ),
     "input_schema": {
         "type": "object",
@@ -373,6 +506,18 @@ NMAP_TOOL_SCHEMA = {
                     "Optional comma-separated NSE categories. Allowed: "
                     + ", ".join(sorted(ALLOWED_SCRIPT_CATEGORIES))
                 ),
+            },
+            "skip_ping": {
+                "type": "boolean",
+                "description": "Add -Pn: skip host discovery, treat host as up.",
+            },
+            "os_detect": {
+                "type": "boolean",
+                "description": "Add -O: attempt OS fingerprinting.",
+            },
+            "top_ports": {
+                "type": "integer",
+                "description": "Scan the N most common ports (1-65535).",
             },
         },
         "required": ["target", "scan_type"],

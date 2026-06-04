@@ -2,9 +2,12 @@
 # The recon TOOLS themselves (nmap, subfinder, httpx, whatweb, nuclei, gobuster)
 # are external binaries — install those via your OS package manager / Go.
 
-# LLM client (pick the one you use)
+# LLM clients — install the ones for the providers you use.
+# anthropic  -> Claude (native)         ANTHROPIC_API_KEY
+# openai     -> OpenAI + OpenRouter + Gemini (all OpenAI-compatible endpoints)
+#               OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY
 anthropic>=0.39.0
-# openai>=1.0.0
+openai>=1.40.0
 
 # Backend API (Month 3)
 fastapi>=0.110.0
@@ -15,3 +18,6 @@ jinja2>=3.1.0
 
 # Dashboard (Month 4) — optional, pick one
 streamlit>=1.33.0
+
+# Tests
+pytest>=8.0.0
