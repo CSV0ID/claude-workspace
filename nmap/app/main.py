@@ -27,7 +27,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from .db import SessionLocal, Scan, init_db
+from .db import SessionLocal, Scan, Finding, init_db
 from .runner import run_scan
 
 
@@ -72,9 +72,16 @@ def create_scan(req: ScanRequest, background: BackgroundTasks) -> dict:
 
 
 @app.get("/scans")
-def list_scans() -> list[dict]:
+def list_scans(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None, pattern="^(queued|running|done|failed)$"),
+) -> list[dict]:
     with SessionLocal() as s:
-        rows = s.query(Scan).order_by(Scan.id.desc()).all()
+        q = s.query(Scan)
+        if status:
+            q = q.filter(Scan.status == status)
+        rows = q.order_by(Scan.id.desc()).offset(offset).limit(limit).all()
         return [r.summary() for r in rows]
 
 
@@ -89,6 +96,27 @@ def _get(scan_id: int) -> Scan:
 @app.get("/scans/{scan_id}")
 def get_scan(scan_id: int) -> dict:
     return _get(scan_id).summary()
+
+
+@app.get("/scans/{scan_id}/findings")
+def get_findings(scan_id: int) -> list[dict]:
+    _get(scan_id)  # 404 if missing
+    with SessionLocal() as s:
+        rows = (s.query(Finding)
+                .filter(Finding.scan_id == scan_id)
+                .order_by(Finding.id.asc()).all())
+        return [f.to_dict() for f in rows]
+
+
+@app.delete("/scans/{scan_id}", status_code=204)
+def delete_scan(scan_id: int):
+    with SessionLocal() as s:
+        row = s.get(Scan, scan_id)
+        if row is None:
+            raise HTTPException(404, f"scan {scan_id} not found")
+        s.delete(row)  # cascade removes findings
+        s.commit()
+    return None
 
 
 @app.get("/scans/{scan_id}/report")

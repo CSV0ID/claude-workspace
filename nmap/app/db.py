@@ -16,8 +16,9 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Integer, Text, DateTime, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, create_engine
+from sqlalchemy.orm import (
+    DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker)
 
 
 def _default_db_url() -> str:
@@ -59,6 +60,9 @@ class Scan(Base):
         DateTime, default=lambda: datetime.now(timezone.utc))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    findings: Mapped[list["Finding"]] = relationship(
+        back_populates="scan", cascade="all, delete-orphan")
+
     def summary(self) -> dict:
         """Lightweight dict for list endpoints (no big report/bundle blobs)."""
         import json
@@ -74,6 +78,27 @@ class Scan(Base):
             "sev_counts": json.loads(self.sev_counts or "{}"),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+        }
+
+
+class Finding(Base):
+    """One structured finding extracted from a scan's tool output."""
+    __tablename__ = "findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_id: Mapped[int] = mapped_column(
+        ForeignKey("scans.id", ondelete="CASCADE"), index=True)
+    tool: Mapped[str] = mapped_column(String(32), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="info", index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+
+    scan: Mapped["Scan"] = relationship(back_populates="findings")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "scan_id": self.scan_id, "tool": self.tool,
+            "severity": self.severity, "name": self.name, "detail": self.detail,
         }
 
 

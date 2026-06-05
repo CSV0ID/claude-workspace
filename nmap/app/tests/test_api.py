@@ -88,3 +88,44 @@ def test_report_before_done_conflicts(monkeypatch):
         row = Scan(target="127.0.0.1", mode="offline", status="queued")
         s.add(row); s.commit(); sid = row.id
     assert client.get(f"/scans/{sid}/report").status_code == 409
+
+
+def test_findings_endpoint_returns_list():
+    sid = client.post("/scans", json={"target": "127.0.0.1"}).json()["id"]
+    r = client.get(f"/scans/{sid}/findings")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)  # no binaries -> likely empty, but valid
+
+
+def test_extract_findings_parses_nuclei_and_nmap():
+    from app.runner import extract_findings
+    payload = {"results": [
+        {"tool": "run_nuclei", "parsed": [
+            {"info": {"severity": "High", "name": "Exposed .git"}, "template-id": "git-exposed"},
+            {"severity": "medium", "name": "Weak TLS"},
+            {"foo": "bar"},  # no severity -> skipped
+        ]},
+        {"tool": "run_nmap", "hosts": [
+            {"hostscripts": {"http-title": "Login Page"}},
+        ]},
+    ]}
+    fs = extract_findings(payload)
+    sevs = {f["severity"] for f in fs}
+    assert "high" in sevs and "medium" in sevs and "info" in sevs
+    assert len(fs) == 3  # the no-severity entry is dropped
+
+
+def test_delete_scan_cascades():
+    sid = client.post("/scans", json={"target": "127.0.0.1"}).json()["id"]
+    assert client.delete(f"/scans/{sid}").status_code == 204
+    assert client.get(f"/scans/{sid}").status_code == 404
+    assert client.delete(f"/scans/{sid}").status_code == 404  # already gone
+
+
+def test_list_pagination_and_filter():
+    for _ in range(3):
+        client.post("/scans", json={"target": "127.0.0.1"})
+    page = client.get("/scans", params={"limit": 2}).json()
+    assert len(page) <= 2
+    done = client.get("/scans", params={"status": "done"}).json()
+    assert all(r["status"] == "done" for r in done)

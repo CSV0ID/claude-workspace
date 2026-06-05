@@ -25,7 +25,48 @@ if _TOOLS not in sys.path:
 
 import report  # noqa: E402  (from nmap/tools)
 
-from .db import SessionLocal, Scan
+from .db import SessionLocal, Scan, Finding
+
+
+def _dig(d: dict, *keys):
+    """Walk nested dict keys, returning the first value found or None."""
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def extract_findings(payload: dict) -> list[dict]:
+    """Pull structured findings from a recon bundle payload (best-effort).
+
+    Handles nuclei-style parsed entries (severity + name nested under 'info')
+    and nmap host NSE script output. Tools without a severity are skipped.
+    """
+    out: list[dict] = []
+    for r in payload.get("results", []):
+        tool = r.get("tool", "")
+        for item in (r.get("parsed") or []):
+            if not isinstance(item, dict):
+                continue
+            sev = _dig(item, "severity") or _dig(item, "info", "severity")
+            if not sev:
+                continue
+            name = (item.get("name") or _dig(item, "info", "name")
+                    or item.get("template-id") or item.get("templateID") or tool)
+            out.append({
+                "tool": tool, "severity": str(sev).lower(),
+                "name": str(name)[:255], "detail": json.dumps(item)[:2000],
+            })
+        # nmap host NSE scripts -> info-level findings.
+        for host in (r.get("hosts") or []):
+            for sid, output in (host.get("hostscripts") or {}).items():
+                out.append({
+                    "tool": "nmap", "severity": "info",
+                    "name": str(sid)[:255], "detail": str(output)[:2000],
+                })
+    return out
 
 
 def _persist(scan_id: int, **fields) -> None:
@@ -80,6 +121,12 @@ def run_scan(scan_id: int) -> None:
         html = report.render_html(run)
         counts = report.count_severities(md)
 
+        # Structured findings (offline bundle carries 'results' with parsed/hosts).
+        try:
+            findings = extract_findings(json.loads(bundle_json))
+        except Exception:
+            findings = []
+
         _persist(
             scan_id,
             status="done",
@@ -91,6 +138,10 @@ def run_scan(scan_id: int) -> None:
             sev_counts=json.dumps(counts),
             finished_at=datetime.now(timezone.utc),
         )
+        if findings:
+            with SessionLocal() as s:
+                s.add_all([Finding(scan_id=scan_id, **f) for f in findings])
+                s.commit()
     except Exception as exc:  # any failure -> failed row, server stays up
         _persist(
             scan_id,

@@ -118,9 +118,75 @@ python -m pytest tests/ -q
 
 Windows: same commands, `python` (or `py`) from the activated venv.
 
+### Backend API (FastAPI)
+```bash
+cd nmap
+uvicorn app.main:app --reload --port 8000     # http://localhost:8000
+# docs UI: http://localhost:8000/docs
+```
+DB file defaults to `nmap/app/scans.db` (override with `RECON_DB_URL`).
+
+Endpoints:
+| Method | Path | What |
+|--------|------|------|
+| GET  | `/health` | liveness |
+| POST | `/scans` | queue a scan; body `{"target","scope?","mode":"offline\|llm","provider?"}` |
+| GET  | `/scans?limit=&offset=&status=` | list scans (newest first) |
+| GET  | `/scans/{id}` | scan detail + severity counts |
+| GET  | `/scans/{id}/findings` | structured findings |
+| GET  | `/scans/{id}/report?format=html\|md` | rendered report |
+| GET  | `/scans/{id}/bundle` | raw recon JSON |
+| DELETE | `/scans/{id}` | delete scan + findings |
+
+```bash
+# example: queue an offline scan and read it back
+curl -X POST localhost:8000/scans -H 'content-type: application/json' \
+     -d '{"target":"127.0.0.1","mode":"offline"}'
+curl localhost:8000/scans/1                       # poll: queued->running->done
+curl "localhost:8000/scans/1/report?format=md"
+```
+
 ---
 
-## 4. Hosting
+## 4. Verify everything works
+
+Run top-to-bottom; each line should succeed.
+
+```bash
+# 1. Python deps present
+python -c "import anthropic, openai, fastapi, sqlalchemy, jinja2; print('py deps ok')"
+
+# 2. Which scanner binaries are installed (missing ones just degrade)
+cd nmap/tools && python tool_wrappers.py
+
+# 3. All tests green (tools + API)
+cd nmap/tools && python -m pytest tests/ -q          # 50 tests
+cd nmap     && python -m pytest app/tests/ -q        # 11 tests
+
+# 4. Offline recon writes a bundle (works with NO binaries/API)
+cd nmap/tools && python offline_recon.py 127.0.0.1 --out /tmp/runs
+ls /tmp/runs/*.json                                  # bundle exists
+
+# 5. Scope guard refuses out-of-scope (must print "not in scope", 0 tools)
+python offline_recon.py 8.8.8.8 --out /tmp/runs
+
+# 6. Backend up + scan round-trip
+cd nmap && uvicorn app.main:app --port 8000 &        # then, in another shell:
+curl localhost:8000/health                           # {"status":"ok"}
+curl -X POST localhost:8000/scans -H 'content-type: application/json' \
+     -d '{"target":"127.0.0.1"}'                      # {"id":1,"status":"queued"}
+curl localhost:8000/scans/1                           # status -> "done"
+
+# 7. LLM mode (only if an API key is set)
+export ANTHROPIC_API_KEY=sk-...
+cd nmap/tools && python agent.py 127.0.0.1
+```
+
+If a step fails, see `ERRORS.md`.
+
+---
+
+## 5. Hosting
 
 ### Important: Vercel cannot run the scanners
 Vercel = serverless functions, no system packages, 10–60 s timeout, no long-lived
@@ -153,7 +219,7 @@ npm run dev             # local
 
 ---
 
-## 5. Quick reference
+## 6. Quick reference
 
 | Goal | Command |
 |------|---------|
@@ -162,4 +228,6 @@ npm run dev             # local
 | See installed scanners | `python nmap/tools/tool_wrappers.py` |
 | Recon, no LLM | `python nmap/tools/offline_recon.py <target>` |
 | Recon, with LLM | `python nmap/tools/agent.py <target>` |
-| Run tests | `cd nmap/tools && python -m pytest tests/ -q` |
+| Run tool tests | `cd nmap/tools && python -m pytest tests/ -q` |
+| Run API tests | `cd nmap && python -m pytest app/tests/ -q` |
+| Start backend | `cd nmap && uvicorn app.main:app --port 8000` |
