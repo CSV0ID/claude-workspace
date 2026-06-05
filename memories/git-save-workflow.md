@@ -11,4 +11,4 @@ The user wants every chat and project artifact saved to files under the `nmap/` 
 
 **Why:** they want a versioned trail of the work, each save isolated on its own branch.
 
-**How to apply:** after writing/updating files, `git add` them, commit with a descriptive message, create the next `tN` branch, and push it to origin. Track which `tN` was last used (so far: t3). Repo: claude-workspace (origin on GitHub). Relates to [[ai-pentest-assistant-project]].
+**How to apply:** after writing/updating files, `git add` them, commit with a descriptive message, create the next `tN` branch, and push it to origin. Track which `tN` was last used (so far: t6). Repo: CSV0ID/claude-workspace (origin on GitHub; full URL `https://github.com/CSV0ID/claude-workspace.git` — checked-out remote may carry a `your-repo` placeholder that 404s, reset origin if push fails). Relates to [[ai-pentest-assistant-project]].
