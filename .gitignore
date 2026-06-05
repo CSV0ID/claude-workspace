@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+
+# Secrets and generated reports — never commit/push
+.env
+*.env
+nmap/.env
+nmap/out/
+nmap/runs/
+
+# Backend DB + caches
+*.db
+.venv/
+node_modules/

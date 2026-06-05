@@ -1,0 +1,53 @@
+# ===========================================================================
+# MASTER DEPENDENCY LIST — AI Pentesting / Recon Assistant
+# Everything needed across all 3 dependency kinds. See nmap/RUN.md for install
+# commands per OS. This file is a checklist; install each group with its own
+# tool (pip / npm / OS package manager + go).
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1) PYTHON (pip install -r nmap/requirements.txt)
+# ---------------------------------------------------------------------------
+anthropic>=0.39.0          # Claude native API
+openai>=1.40.0             # OpenAI + OpenRouter + Gemini (OpenAI-compatible)
+fastapi>=0.110.0           # backend API (Month 3)
+uvicorn>=0.29.0            # ASGI server for FastAPI
+jinja2>=3.1.0              # HTML report templates
+sqlalchemy>=2.0.0          # scan/result persistence (Month 3)
+streamlit>=1.33.0          # quick dashboard option (Month 4)
+pytest>=8.0.0              # tests
+
+# ---------------------------------------------------------------------------
+# 2) NODE / NPM  (cd dashboard && npm install — see package.json)
+#    Only needed for the React/Vite dashboard (Month 4).
+# ---------------------------------------------------------------------------
+# react            ^18
+# react-dom        ^18
+# vite             ^5
+# axios            ^1     (calls the FastAPI backend)
+
+# ---------------------------------------------------------------------------
+# 3) SCANNER BINARIES  (OS package manager + Go — NOT pip/npm)
+#    Linux: apt | macOS: brew | Windows: scoop/choco or WSL2. See RUN.md.
+# ---------------------------------------------------------------------------
+# nmap            # port/service/OS scan + NSE scripts   (apt/brew/scoop)
+# nikto           # web server vuln/misconfig            (apt/brew)
+# whatweb         # web tech fingerprint                 (apt/brew)
+# sslscan         # TLS/SSL audit                        (apt/brew)
+# wafw00f         # WAF detection                        (apt/pip)
+# wpscan          # WordPress vuln scan                  (gem install wpscan)
+# httpx           # live HTTP/S probe   go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+# nuclei          # template vuln scan  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+# subfinder       # subdomain enum      go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+# dnsx            # DNS enum            go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+# katana          # web crawler         go install github.com/projectdiscovery/katana/cmd/katana@latest
+# gobuster        # dir/vhost brute     go install github.com/OJ/gobuster/v3@latest
+# ffuf            # web fuzzer          go install github.com/ffuf/ffuf/v2@latest
+
+# ---------------------------------------------------------------------------
+# 4) RUNTIMES (install these first)
+# ---------------------------------------------------------------------------
+# python >= 3.10
+# go      >= 1.21   (for the projectdiscovery / gobuster / ffuf tools)
+# node    >= 18     (dashboard only)
+# ruby             (wpscan only)
