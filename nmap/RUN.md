@@ -186,6 +186,33 @@ If a step fails, see `ERRORS.md`.
 
 ---
 
+## 4b. Dashboard UI (Month 4)
+
+A React + Vite single-page app (`nmap/index.html` + `nmap/src/`) that drives the
+backend: queue scans, watch status live, browse findings, view/download reports.
+
+```bash
+cd nmap
+npm install
+# 1. start the backend (separate shell):  uvicorn app.main:app --port 8000
+npm run dev                # dev server on http://localhost:5173
+```
+
+The Vite dev server proxies `/scans` and `/health` to the backend on `:8000`
+(see `vite.config.js`), so no CORS setup is needed. Override the backend with
+`VITE_API_TARGET=http://host:port npm run dev`.
+
+Build a static bundle for hosting:
+```bash
+npm run build              # outputs dist/
+npm run preview            # serve the build locally
+```
+
+In production the app talks to the backend via `VITE_API_BASE` (the public
+backend URL); leave it unset in dev to use the proxy.
+
+---
+
 ## 5. Hosting
 
 ### Important: Vercel cannot run the scanners
@@ -211,10 +238,11 @@ This bakes every scanner into the image so the host needs nothing.
 
 ### Frontend on Vercel
 ```bash
-cd dashboard            # Month-4 React app (not built yet)
+cd nmap                 # dashboard root (index.html + src/)
 npm install
-npm run dev             # local
-# deploy: push repo, import in Vercel, set VITE_API_URL to backend URL
+npm run build           # static bundle -> dist/
+# deploy: import the repo in Vercel, set root to nmap/, build cmd `npm run build`,
+# output dir `dist`, and env VITE_API_BASE to the backend's public URL.
 ```
 
 ---

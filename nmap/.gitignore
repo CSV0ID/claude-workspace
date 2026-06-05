@@ -1,0 +1,11 @@
+# Frontend (Month 4 dashboard)
+node_modules/
+dist/
+.vite/
+
+# Backend
+app/*.db
+*.pyc
+__pycache__/
+.pytest_cache/
+runs/
