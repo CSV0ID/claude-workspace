@@ -24,6 +24,7 @@ import json
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -39,6 +40,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Pentesting / Recon Assistant", version="0.1.0",
               lifespan=lifespan)
+
+# CORS — temporary wildcard until Vercel URL is known.
+# After deploying frontend, replace "*" with your Vercel URL:
+#   allow_origins=["https://your-app.vercel.app"]
+# and set allow_credentials=True, then redeploy Railway.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,   # must be False when allow_origins=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ScanRequest(BaseModel):
